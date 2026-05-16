@@ -204,6 +204,11 @@ def display_events(events, include_state=True):
 
 def display_states(events):
     """Display event count breakdown by state."""
+    if not events:
+        print("\n🗺️  Event count by state (0 total events):\n")
+        print("   No events to display.\n")
+        return
+    
     state_counts = Counter(e.get("state", "Unknown") for e in events)
     sorted_states = sorted(state_counts.items(), key=lambda x: x[1], reverse=True)
 
