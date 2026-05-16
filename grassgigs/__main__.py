@@ -12,13 +12,18 @@ Usage:
     grassgigs --states              # list all states with event counts
     grassgigs --state VA --city "Richmond" --limit 10
     grassgigs --json --state PA --limit 20
+    grassgigs --city "Nashville, TN" --radius 50 --days 14  # 50mi radius
+    grassgigs --lat 36.1627 --lng -86.7816 --radius 25
+    grassgigs --city "Asheville, NC" --radius 100 --distance-sort
 """
 
 import argparse
 import json
+import math
 import sys
 import urllib.request
 import urllib.error
+import urllib.parse
 from datetime import datetime, timedelta
 from collections import Counter
 
@@ -62,16 +67,49 @@ def format_date(date_str):
     return date_str
 
 
+def haversine(lat1, lon1, lat2, lon2):
+    """Calculate the great-circle distance between two points on Earth (miles)."""
+    R = 3958.8  # Earth radius in miles
+    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    c = 2 * math.asin(math.sqrt(a))
+    return R * c
+
+
+def geocode_city(city_name):
+    """Look up lat/lng for a city name using OpenStreetMap Nominatim (free, no API key)."""
+    try:
+        url = f"https://nominatim.openstreetmap.org/search?format=json&q={urllib.parse.quote(city_name)}&limit=1"
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "grassgigs-cli/1.0 (github.com/rmkraus/grassgigs-cli)"
+            }
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if data:
+                return float(data[0]["lat"]), float(data[0]["lon"])
+    except Exception:
+        pass
+    return None, None
+
+
 def filter_events(events, state=None, city=None, band=None, days=None,
-                  event_type=None, upcoming=None, limit=None):
+                  event_type=None, upcoming=None, limit=None,
+                  lat=None, lng=None, radius=None, distance_sort=False,
+                  center_city=None):
     """Filter events based on search criteria."""
     filtered = events
+    distances = {}
 
     if state:
         state = state.upper()
         filtered = [e for e in filtered if e.get("state", "").upper() == state]
 
-    if city:
+    if city and lat is None and lng is None:
         city_lower = city.lower()
         filtered = [e for e in filtered if city_lower in e.get("city", "").lower()]
 
@@ -87,9 +125,33 @@ def filter_events(events, state=None, city=None, band=None, days=None,
         filtered = [e for e in filtered if e.get("date", "") >= cutoff]
 
     if upcoming:
-        # Only show future events (not today or in the past)
         today = datetime.now().strftime("%Y-%m-%d")
         filtered = [e for e in filtered if e.get("date", "") > today]
+
+    # Radius search: requires lat/lng and radius in miles
+    if lat is not None and lng is not None and radius:
+        center_label = ""
+        if center_city:
+            center_label = f" ({center_city})"
+
+        radius_events = []
+        for e in filtered:
+            elat = e.get("latitude")
+            elng = e.get("longitude")
+            if elat is not None and elng is not None:
+                dist = haversine(lat, lng, float(elat), float(elng))
+                if dist <= radius:
+                    e["_distance"] = round(dist, 1)
+                    radius_events.append(e)
+                    distances[id(e)] = dist
+
+        filtered = radius_events
+        print(f"\n📍 Found {len(filtered)} events within {radius} miles{center_label}")
+    else:
+        print(f"\n🎵 Found {len(filtered)} event(s)")
+
+    if distance_sort and filtered:
+        filtered.sort(key=lambda e: e.get("_distance", 0))
 
     if limit:
         filtered = filtered[:limit]
@@ -115,6 +177,9 @@ def display_events(events, include_state=True):
         url = event.get("url", "")
         price = event.get("price", "")
         doors = event.get("doors", "")
+        distance = event.get("_distance", None)
+
+        distance_str = f"  {distance} mi away" if distance is not None else ""
 
         print(f"\n{i}. {band}")
         print(f"   📅 {date}")
@@ -123,6 +188,8 @@ def display_events(events, include_state=True):
             print(f"   🗺️  {city}, {state}")
         elif city:
             print(f"   🗺️  {city}")
+        if distance_str:
+            print(f"   📏 {distance_str}")
         if doors:
             print(f"   🚪 Doors: {doors}")
         if price:
@@ -182,7 +249,38 @@ Examples:
     parser.add_argument("--json", "-j", action="store_true", dest="json_output", help="Output in JSON format")
     parser.add_argument("--verbose", "-v", action="store_true", help="Include all event fields in JSON output")
 
+    # Radius search args
+    parser.add_argument("--lat", type=float, help="Latitude for radius search")
+    parser.add_argument("--lng", type=float, help="Longitude for radius search")
+    parser.add_argument("--radius", type=int, help="Search radius in miles (requires --lat/--lng or --city with --radius)")
+    parser.add_argument("--distance-sort", action="store_true", help="Sort results by distance from center point")
+
     args = parser.parse_args()
+
+    # Handle radius search geocoding
+    lat = args.lat
+    lng = args.lng
+    center_city = None
+
+    if args.radius and (lat is None or lng is None):
+        if args.city:
+            lat, lng = geocode_city(args.city)
+            if lat is None:
+                print(f"Error: Could not find coordinates for '{args.city}'. "
+                      f"Try --lat and --lng directly, or a more specific city name.",
+                      file=sys.stderr)
+                sys.exit(1)
+            center_city = args.city
+        else:
+            print("Error: --radius requires either --city or both --lat and --lng.",
+                  file=sys.stderr)
+            sys.exit(1)
+
+    if args.radius and lat is not None and lng is not None and args.distance_sort:
+        if not center_city and args.city:
+            center_city = args.city
+        elif not center_city:
+            center_city = f"{lat:.2f},{lng:.2f}"
 
     # Fetch all events
     print("Fetching events from GrassGigs API...")
@@ -203,7 +301,12 @@ Examples:
         days=args.days,
         event_type=args.type,
         upcoming=args.upcoming,
-        limit=args.limit
+        limit=args.limit,
+        lat=lat,
+        lng=lng,
+        radius=args.radius,
+        distance_sort=args.distance_sort,
+        center_city=center_city,
     )
 
     # Output
