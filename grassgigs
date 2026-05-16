@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""
+grassgigs - Bluegrass & grassroots concert lookup CLI tool.
+
+Queries the GrassGigs public API (AWS endpoint) to search concerts,
+festivals, church services, and workshops across the US.
+
+Usage:
+    grassgigs --state NC --days 7 --limit 5
+    grassgigs --band "Jerry Douglas" --limit 3
+    grassgigs --upcoming --type festival --limit 5
+    grassgigs --states              # list all states with event counts
+    grassgigs --state VA --city "Richmond" --limit 10
+    grassgigs --json --state PA --limit 20
+"""
+
+import argparse
+import json
+import sys
+import urllib.request
+import urllib.error
+from datetime import datetime, timedelta
+from collections import Counter
+
+API_URL = "https://bmbn5a7v4c.execute-api.us-east-1.amazonaws.com/Prod/events"
+
+
+def fetch_events():
+    """Fetch all events from the GrassGigs API."""
+    req = urllib.request.Request(
+        API_URL,
+        headers={"User-Agent": "grassgigs-cli/1.0"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data.get("events", [])
+    except urllib.error.URLError as e:
+        print(f"Error: Failed to fetch events from API: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def parse_date(date_str):
+    """Parse event date string into a datetime object."""
+    try:
+        # Try multiple formats
+        for fmt in ["%Y-%m-%d", "%m/%d/%Y"]:
+            try:
+                return datetime.strptime(date_str, fmt)
+            except ValueError:
+                continue
+    except (TypeError, AttributeError):
+        pass
+    return None
+
+
+def format_date(date_str):
+    """Format date string for display."""
+    dt = parse_date(date_str)
+    if dt:
+        return dt.strftime("%a, %b %d, %Y")
+    return date_str
+
+
+def filter_events(events, state=None, city=None, band=None, days=None,
+                  event_type=None, upcoming=None, limit=None):
+    """Filter events based on search criteria."""
+    filtered = events
+
+    if state:
+        state = state.upper()
+        filtered = [e for e in filtered if e.get("state", "").upper() == state]
+
+    if city:
+        city_lower = city.lower()
+        filtered = [e for e in filtered if city_lower in e.get("city", "").lower()]
+
+    if band:
+        band_lower = band.lower()
+        filtered = [e for e in filtered if band_lower in e.get("band", "").lower()]
+
+    if event_type:
+        filtered = [e for e in filtered if event_type in e.get("type", "")]
+
+    if days:
+        cutoff = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+        filtered = [e for e in filtered if e.get("date", "") >= cutoff]
+
+    if upcoming:
+        # Only show future events (not today or in the past)
+        today = datetime.now().strftime("%Y-%m-%d")
+        filtered = [e for e in filtered if e.get("date", "") > today]
+
+    if limit:
+        filtered = filtered[:limit]
+
+    return filtered
+
+
+def display_events(events, include_state=True):
+    """Pretty-print a list of events."""
+    if not events:
+        print("No events found matching your criteria.")
+        return
+
+    print(f"\n🎵 Found {len(events)} event(s)\n" + "=" * 60)
+
+    for i, event in enumerate(events, 1):
+        band = event.get("band", "Unknown")
+        date = format_date(event.get("date", ""))
+        venue = event.get("venue", "TBA")
+        city = event.get("city", "")
+        state = event.get("state", "")
+        event_type = event.get("type", "concert")
+        url = event.get("url", "")
+        price = event.get("price", "")
+        doors = event.get("doors", "")
+
+        print(f"\n{i}. {band}")
+        print(f"   📅 {date}")
+        print(f"   📍 {venue}")
+        if city and state:
+            print(f"   🗺️  {city}, {state}")
+        elif city:
+            print(f"   🗺️  {city}")
+        if doors:
+            print(f"   🚪 Doors: {doors}")
+        if price:
+            print(f"   💰 {price}")
+        print(f"   🎶 {event_type}")
+        if url:
+            print(f"   🔗 {url}")
+        print()
+
+    print("=" * 60)
+
+
+def display_states(events):
+    """Display event count breakdown by state."""
+    state_counts = Counter(e.get("state", "Unknown") for e in events)
+    sorted_states = sorted(state_counts.items(), key=lambda x: x[1], reverse=True)
+
+    total = sum(count for _, count in sorted_states)
+    print(f"\n🗺️  Event count by state ({total} total events):\n")
+
+    max_state = max(len(s) for s, _ in sorted_states)
+    max_count = max(count for _, count in sorted_states)
+    bar_width = 30
+
+    for state, count in sorted_states:
+        bar_len = int((count / max_count) * bar_width) if max_count > 0 else 0
+        bar = "█" * bar_len
+        print(f"   {state:<{max_state}} | {bar} {count:>4}  ({count/total*100:.1f}%)")
+
+    print(f"\n   {'─' * (max_state + bar_width + 12)}")
+    print(f"   Total: {total} events from {len(sorted_states)} states\n")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="🎵 grassgigs - Bluegrass & grassroots concert lookup",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s --state NC --days 7 --limit 5        # Next 7 days in NC, 5 events
+  %(prog)s --band "Jerry Douglas" --limit 3     # Shows by Jerry Douglas
+  %(prog)s --upcoming --type festival --limit 5  # Festivals coming up
+  %(prog)s --states                               # List states with counts
+  %(prog)s --state VA --city "Richmond" --limit 10
+  %(prog)s --json --state PA --limit 20          # JSON output
+        """
+    )
+
+    parser.add_argument("--state", "-s", help="Filter by US state code (e.g., NC, VA, PA)")
+    parser.add_argument("--city", "-c", help="Filter by city name")
+    parser.add_argument("--band", "-b", help="Filter by band/artist name")
+    parser.add_argument("--type", "-t", help="Filter by event type (concert, festival, church_service, workshop)")
+    parser.add_argument("--days", "-d", type=int, help="Show events within N days from today")
+    parser.add_argument("--upcoming", action="store_true", help="Show only upcoming events (future dates)")
+    parser.add_argument("--limit", "-l", type=int, default=10, help="Maximum number of events to return (default: 10)")
+    parser.add_argument("--states", action="store_true", help="Show event count breakdown by state")
+    parser.add_argument("--json", "-j", action="store_true", dest="json_output", help="Output in JSON format")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Include all event fields in JSON output")
+
+    args = parser.parse_args()
+
+    # Fetch all events
+    print("Fetching events from GrassGigs API...")
+    events = fetch_events()
+    print(f"Loaded {len(events)} events.\n")
+
+    # Show states breakdown if requested
+    if args.states:
+        display_states(events)
+        return
+
+    # Filter events
+    filtered = filter_events(
+        events,
+        state=args.state,
+        city=args.city,
+        band=args.band,
+        days=args.days,
+        event_type=args.type,
+        upcoming=args.upcoming,
+        limit=args.limit
+    )
+
+    # Output
+    if args.json_output:
+        if args.verbose:
+            print(json.dumps(filtered, indent=2))
+        else:
+            # Compact JSON with key fields
+            compact = []
+            for e in filtered:
+                compact.append({
+                    "band": e.get("band"),
+                    "date": e.get("date"),
+                    "venue": e.get("venue"),
+                    "city": e.get("city"),
+                    "state": e.get("state"),
+                    "type": e.get("type"),
+                    "url": e.get("url"),
+                    "price": e.get("price"),
+                })
+            print(json.dumps(compact, indent=2))
+    else:
+        display_events(filtered)
+
+
+if __name__ == "__main__":
+    main()
