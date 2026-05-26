@@ -122,7 +122,7 @@ def filter_events(events, state=None, city=None, band=None, days=None,
 
     if days:
         cutoff = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
-        filtered = [e for e in filtered if e.get("date", "") >= cutoff]
+        filtered = [e for e in filtered if e.get("date", "") <= cutoff]
 
     if upcoming:
         today = datetime.now().strftime("%Y-%m-%d")
