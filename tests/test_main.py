@@ -327,50 +327,40 @@ class TestFilterEvents:
         assert len(result) == 0
 
     def test_filter_by_days(self):
-        """Test filtering events from N days onward."""
-        # The filter keeps events where date >= cutoff
-        # cutoff = today + N days
-        # So it shows events N days in the future and beyond
-        from datetime import datetime, timedelta
-        
-        # Create an event 3 days from now
+        """Test filtering events within N days from today."""
+        today = datetime.now().strftime("%Y-%m-%d")
         three_days_from_now = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")
-        # Create an event 20 days from now
+        seven_days_from_now = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
         twenty_days_from_now = (datetime.now() + timedelta(days=20)).strftime("%Y-%m-%d")
-        # Create an event yesterday
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        
+
         recent_events = [
             {"date": yesterday, "band": "Yesterday Band"},
+            {"date": today, "band": "Today Band"},
             {"date": three_days_from_now, "band": "Three Days Band"},
+            {"date": seven_days_from_now, "band": "Seven Days Band"},
             {"date": twenty_days_from_now, "band": "Twenty Days Band"},
         ]
-        
-        # With days=7, cutoff = today+7. Only events >= today+7 match.
-        # So 3-day event is BEFORE cutoff (excluded), 20-day event is AFTER (included)
+
         result = filter_events(recent_events, days=7)
-        assert len(result) == 1
-        assert result[0]["band"] == "Twenty Days Band"
-        
-        # With days=1, cutoff = today+1. Both 3-day and 20-day are after.
+        bands = [e["band"] for e in result]
+        assert bands == ["Today Band", "Three Days Band", "Seven Days Band"]
+
         result = filter_events(recent_events, days=1)
-        assert len(result) == 2
-        bands = sorted([e["band"] for e in result])
-        assert bands == ["Three Days Band", "Twenty Days Band"]
+        bands = [e["band"] for e in result]
+        assert bands == ["Today Band"]
 
     def test_filter_by_days_no_match(self):
         """Test filtering with 0 days (only today's events)."""
         today = datetime.now().strftime("%Y-%m-%d")
+        tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
         events_today = [
             {"date": today, "band": "Today Band"},
-            {"date": "2026-12-31", "band": "Future Band"},
+            {"date": tomorrow, "band": "Tomorrow Band"},
         ]
         result = filter_events(events_today, days=0)
-        # With days=0, cutoff = today. Both today and 2026-12-31 >= today, so both pass
-        assert len(result) == 2
-        bands = [e["band"] for e in result]
-        assert "Today Band" in bands
-        assert "Future Band" in bands
+        assert len(result) == 1
+        assert result[0]["band"] == "Today Band"
 
     def test_filter_upcoming(self):
         """Test upcoming filter (future dates only)."""
