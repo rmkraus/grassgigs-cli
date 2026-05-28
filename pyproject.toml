@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "grassgigs"
-version = "1.0.0"
+version = "1.0.1"
 description = "Bluegrass & grassroots concert lookup CLI tool"
 readme = "README.md"
 authors = [
